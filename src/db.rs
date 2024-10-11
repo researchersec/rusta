@@ -1,46 +1,49 @@
-use deadpool_postgres::{Config, Pool, ManagerConfig, RecyclingMethod};
-use tokio_postgres_rustls::MakeRustlsConnect;
-use rustls::{ClientConfig, RootCertStore, OwnedTrustAnchor};
 use std::sync::Arc;
-use webpki_roots::TLS_SERVER_ROOTS;
+use rustls::{ClientConfig, RootCertStore};
+use rustls_pemfile::{certs, pkcs8_private_keys};
+use std::fs::File;
+use std::io::BufReader;
+use webpki::TrustAnchor;
+use tokio_postgres_rustls::MakeRustlsConnect;
+use deadpool_postgres::{Config, Pool};
+use std::error::Error;
 
-pub async fn create_pool() -> Pool {
-    // Setup RootCertStore for TLS
+pub fn create_pool() -> Result<Pool, Box<dyn Error>> {
+    // Load root certificates
     let mut root_cert_store = RootCertStore::empty();
-    let trust_anchors: Vec<OwnedTrustAnchor> = TLS_SERVER_ROOTS
-        .0
-        .iter()
-        .map(|ta| {
-            OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)
-        })
-        .collect();
-    root_cert_store.add_server_trust_anchors(trust_anchors.into_iter());
+    let trust_anchors: Vec<TrustAnchor> = TLS_SERVER_ROOTS.0.iter().copied().collect();
+    root_cert_store.add_server_trust_anchors(trust_anchors.into_iter().map(|anchor| {
+        rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+            anchor.subject,
+            anchor.spki,
+            anchor.name_constraints,
+        )
+    }));
 
-    // Create TLS config
-    let tls_config = Arc::new(ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(root_cert_store)
-        .with_no_client_auth());
+    // Load client certificate and private key
+    let mut cert_file = BufReader::new(File::open("client.crt")?);
+    let mut key_file = BufReader::new(File::open("client.key")?);
+    let cert_chain = certs(&mut cert_file)?.into_iter().map(rustls::Certificate).collect();
+    let mut keys = pkcs8_private_keys(&mut key_file)?;
+    let key = rustls::PrivateKey(keys.remove(0));
+
+    // Build the TLS client configuration
+    let mut tls_config = ClientConfig::new();
+    tls_config.root_store = root_cert_store;
+    tls_config.set_single_client_cert(cert_chain, key)?;
+    let tls_config = Arc::new(tls_config);
 
     // Create Rustls connector
-    let rustls_connector = MakeRustlsConnect::new((*tls_config).clone());
+    let rustls_connector = MakeRustlsConnect::new(tls_config.clone());
 
-    // Setup Postgres config
-    let mut pg_config = tokio_postgres::Config::new();
-    pg_config
-        .host("localhost")
-        .user("postgres")
-        .password("mysecretpassword")
-        .dbname("mydatabase");
+    // Configure Deadpool Postgres
+    let mut pool_config = Config::new();
+    pool_config.dbname = Some("my_database".to_string());
+    pool_config.host = Some("localhost".to_string());
+    pool_config.user = Some("my_user".to_string());
+    pool_config.password = Some("my_password".to_string());
 
-    // Create pool configuration
-    let pool_config = Config {
-        manager: Some(ManagerConfig {
-            recycling_method: RecyclingMethod::Fast,
-        }),
-        ..Default::default()
-    };
-
-    // Create the connection pool with TLS
-    pool_config.create_pool(rustls_connector).expect("Failed to create pool")
+    // Create and return the connection pool
+    let pool = pool_config.create_pool(Some(rustls_connector))?;
+    Ok(pool)
 }
