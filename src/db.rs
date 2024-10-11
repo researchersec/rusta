@@ -6,7 +6,7 @@ use webpki_roots::TLS_SERVER_ROOTS;
 
 pub async fn create_pool() -> Pool {
     let mut root_cert_store = RootCertStore::empty();
-    let trust_anchors: Vec<OwnedTrustAnchor> = TLS_SERVER_ROOTS
+    let trust_anchors: Vec<OwnedTrustAnchor> = TLS_SERVER_ROOTS.0
         .iter()
         .map(|ta| OwnedTrustAnchor::from_subject_spki_name_constraints(
             ta.subject,
@@ -37,5 +37,5 @@ pub async fn create_pool() -> Pool {
         ..Default::default()
     };
 
-    pool_config.create_pool(rustls_connector).expect("Failed to create pool")
+    pool_config.create_pool(Some(rustls_connector)).expect("Failed to create pool")
 }
