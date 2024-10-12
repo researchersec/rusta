@@ -24,8 +24,6 @@ tokio-postgres-rustls = "0.5"
 rustls = "0.20"
 webpki-roots = "0.22.6"
 
-
-rustls = "0.20"
 rustls-pemfile = "1.0"
 webpki = "0.22"
 
